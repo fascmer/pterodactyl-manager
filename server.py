@@ -8,6 +8,20 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# CORS 中间件
+@web.middleware
+async def cors_middleware(request, handler):
+    # 处理 OPTIONS 预检请求
+    if request.method == 'OPTIONS':
+        response = web.Response()
+    else:
+        response = await handler(request)
+    
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-API-URL, X-API-Key, X-Server-ID'
+    return response
+
 def get_headers(request):
     api_key = request.headers.get('X-API-Key', '')
     return {
@@ -64,6 +78,17 @@ async def get_file_contents(request):
             async with session.get(url, params={'file': file_path}, headers=get_headers(request), ssl=False) as resp:
                 if resp.status == 200:
                     content = await resp.text()
+                    # 处理各种可能的格式
+                    try:
+                        data = json.loads(content)
+                        # 如果是 Buffer 格式 {"type":"Buffer","data":[...]}
+                        if isinstance(data, dict) and data.get('type') == 'Buffer' and 'data' in data:
+                            content = bytes(data['data']).decode('utf-8')
+                        # 如果是纯字符串
+                        elif isinstance(data, str):
+                            content = data
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
                     return web.Response(text=content, content_type='text/plain')
                 else:
                     text = await resp.text()
@@ -78,12 +103,12 @@ async def get_file_contents(request):
 
 async def write_file(request):
     file_path = request.query.get('file', '')
-    content = await request.text()
+    content = await request.read()  # 读取原始字节
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{get_base_url(request)}/write"
             headers = get_headers(request)
-            headers['Content-Type'] = 'text/plain'
+            headers.pop('Content-Type', None)  # 移除 Content-Type
             async with session.post(url, params={'file': file_path}, data=content, headers=headers, ssl=False) as resp:
                 if resp.status in [200, 204]:
                     return web.json_response({'status': 'ok'})
@@ -164,6 +189,46 @@ async def get_upload_url(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
+async def proxy_upload(request):
+    """代理上传文件到 Wings 服务器，避免 CORS 问题"""
+    directory = request.query.get('directory', '/')
+    try:
+        # 先获取上传 URL
+        async with aiohttp.ClientSession() as session:
+            url = f"{get_base_url(request)}/upload"
+            async with session.get(url, headers=get_headers(request), ssl=False) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    return web.json_response({'error': f'获取上传地址失败: {text}'}, status=resp.status)
+                data = await resp.json()
+                upload_url = data.get('attributes', {}).get('url', '')
+                if not upload_url:
+                    return web.json_response({'error': '无法获取上传地址'}, status=500)
+        
+        # 读取上传的文件
+        reader = await request.multipart()
+        
+        async with aiohttp.ClientSession() as session:
+            # 创建 FormData
+            form = aiohttp.FormData()
+            
+            async for part in reader:
+                if part.filename:
+                    content = await part.read()
+                    form.add_field('files', content, filename=part.filename, content_type=part.headers.get('Content-Type', 'application/octet-stream'))
+            
+            # 上传到 Wings
+            full_url = f"{upload_url}&directory={directory}"
+            async with session.post(full_url, data=form, ssl=False) as resp:
+                if resp.status in [200, 204]:
+                    return web.json_response({'status': 'ok'})
+                else:
+                    text = await resp.text()
+                    return web.json_response({'error': f'上传失败: {text}'}, status=resp.status)
+    except Exception as e:
+        logger.exception("proxy_upload error")
+        return web.json_response({'error': str(e)}, status=500)
+
 async def compress_files(request):
     data = await request.json()
     try:
@@ -193,8 +258,9 @@ async def decompress_file(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
-app = web.Application(client_max_size=1024**3)  # 1GB max
+app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
 app.router.add_get('/', index)
+app.router.add_route('OPTIONS', '/api/files/{tail:.*}', lambda r: web.Response())  # CORS preflight
 app.router.add_get('/api/files/list', list_files)
 app.router.add_get('/api/files/contents', get_file_contents)
 app.router.add_post('/api/files/write', write_file)
@@ -203,6 +269,7 @@ app.router.add_post('/api/files/rename', rename_file)
 app.router.add_post('/api/files/create-folder', create_folder)
 app.router.add_get('/api/files/download', download_file)
 app.router.add_get('/api/files/upload', get_upload_url)
+app.router.add_post('/api/files/upload', proxy_upload)
 app.router.add_post('/api/files/compress', compress_files)
 app.router.add_post('/api/files/decompress', decompress_file)
 app.router.add_static('/static/', './static')

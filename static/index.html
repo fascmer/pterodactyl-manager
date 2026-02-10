@@ -356,14 +356,17 @@
         async function saveFile() {
             const content = document.getElementById('editorContent').value;
             try {
+                const headers = getHeaders();
+                headers['Content-Type'] = 'text/plain';
                 const resp = await fetch(`/api/files/write?file=${encodeURIComponent(currentEditFile)}`, {
                     method: 'POST',
-                    headers: getHeaders(),
+                    headers: headers,
                     body: content
                 });
                 if (resp.ok) {
                     showToast('保存成功', 'success');
                     closeEditor();
+                    refreshFiles();
                 } else {
                     const err = await resp.json();
                     showToast('保存失败: ' + (err.error || resp.statusText), 'error');
@@ -450,9 +453,11 @@
                 if (!name) return;
                 const filePath = currentPath.replace(/\/$/, '') + '/' + name;
                 try {
+                    const headers = getHeaders();
+                    headers['Content-Type'] = 'text/plain';
                     const resp = await fetch(`/api/files/write?file=${encodeURIComponent(filePath)}`, {
                         method: 'POST',
-                        headers: getHeaders(),
+                        headers: headers,
                         body: ''
                     });
                     if (resp.ok) {
@@ -526,45 +531,38 @@
         async function handleFiles(fileList) {
             const progress = document.getElementById('uploadProgress');
             
-            // 获取上传URL
-            try {
-                const resp = await fetch('/api/files/upload', {
-                    headers: getHeaders()
-                });
-                const data = await resp.json();
-                if (!data.attributes || !data.attributes.url) {
-                    showToast('获取上传地址失败', 'error');
-                    return;
-                }
+            for (const file of fileList) {
+                progress.innerHTML += `<p>⬆️ 正在上传: ${file.name}...</p>`;
                 
-                const uploadUrl = data.attributes.url;
+                const formData = new FormData();
+                formData.append('files', file);
                 
-                for (const file of fileList) {
-                    progress.innerHTML += `<p>⬆️ 正在上传: ${file.name}...</p>`;
+                try {
+                    // 通过后端代理上传
+                    // 注意：FormData 不能设置 Content-Type，让浏览器自动设置
+                    const config = getConfig();
+                    const uploadResp = await fetch(`/api/files/upload?directory=${encodeURIComponent(currentPath)}`, {
+                        method: 'POST',
+                        headers: {
+                            'X-API-URL': config.api_url,
+                            'X-Server-ID': config.server_id,
+                            'X-API-Key': config.api_key
+                        },
+                        body: formData
+                    });
                     
-                    const formData = new FormData();
-                    formData.append('files', file);
-                    
-                    try {
-                        const uploadResp = await fetch(uploadUrl + `&directory=${encodeURIComponent(currentPath)}`, {
-                            method: 'POST',
-                            body: formData
-                        });
-                        
-                        if (uploadResp.ok) {
-                            progress.innerHTML += `<p style="color:#00c853">✅ ${file.name} 上传成功</p>`;
-                        } else {
-                            progress.innerHTML += `<p style="color:#ff1744">❌ ${file.name} 上传失败</p>`;
-                        }
-                    } catch (e) {
-                        progress.innerHTML += `<p style="color:#ff1744">❌ ${file.name}: ${e.message}</p>`;
+                    if (uploadResp.ok) {
+                        progress.innerHTML += `<p style="color:#00c853">✅ ${file.name} 上传成功</p>`;
+                    } else {
+                        const err = await uploadResp.json();
+                        progress.innerHTML += `<p style="color:#ff1744">❌ ${file.name}: ${err.error || '上传失败'}</p>`;
                     }
+                } catch (e) {
+                    progress.innerHTML += `<p style="color:#ff1744">❌ ${file.name}: ${e.message}</p>`;
                 }
-                
-                refreshFiles();
-            } catch (e) {
-                showToast('上传失败: ' + e.message, 'error');
             }
+            
+            refreshFiles();
         }
         
         // 输入框
