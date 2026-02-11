@@ -4,6 +4,9 @@
 
 **配置保存在浏览器本地 (localStorage)，服务器不保存任何用户数据。**
 
+## 停机自启功能已被移除
+可以移步到：https://github.com/fascmer/ptero-monitor
+
 ## 功能
 
 - 📂 文件列表浏览
@@ -17,8 +20,7 @@
 
 ## 快速开始
 
-<img width="1188" height="421" alt="image" src="https://github.com/user-attachments/assets/11764a9e-7785-4f27-b530-b53804b51d26" />
-
+<img width="1167" height="631" alt="image" src="https://github.com/user-attachments/assets/62fc8e97-5bab-40d7-8ccc-90476a70f15d" />
 
 
 ### Docker 运行
